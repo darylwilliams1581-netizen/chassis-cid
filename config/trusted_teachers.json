@@ -1,0 +1,4 @@
+{
+  "description": "Teacher IDs allowed to set the trusted flag. Empty by default — add only IDs you have approved yourself. A teacher not on this list can still inject grains, but any trusted flag is downgraded and recorded as 'trust requested, not granted'.",
+  "teachers": []
+}

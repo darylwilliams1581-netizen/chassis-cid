@@ -1,7 +1,7 @@
 [project]
 name = "drayl-base"
-version = "0.38.0"
-description = "P38 D-RAYL base layer with school mode and a nursery script"
+version = "0.39.0"
+description = "P39 D-RAYL teacher arm, school mode, and base layer"
 readme = "README.md"
 requires-python = ">=3.10"
 

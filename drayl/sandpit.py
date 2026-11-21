@@ -29,7 +29,10 @@ class Grain:
     source_name: str | None = None
     source_sha256: str | None = None
     superseded_by: str | None = None
-    status: str = "active"  # "active" or "superseded"
+    status: str = "active"  # "active", "superseded", or "conflict"
+    teacher_id: str | None = None
+    concept_key: str | None = None
+    trust_provenance: dict | None = None
 
     def source(self) -> dict | None:
         if self.source_name or self.source_sha256:
@@ -50,6 +53,9 @@ class Grain:
             "source": self.source(),
             "superseded_by": self.superseded_by,
             "status": self.status,
+            "teacher_id": self.teacher_id,
+            "concept_key": self.concept_key,
+            "trust_provenance": dict(self.trust_provenance) if self.trust_provenance else None,
         }
 
     def heat(self) -> dict:
@@ -82,6 +88,9 @@ class Grain:
             source_sha256=source.get("sha256"),
             superseded_by=data.get("superseded_by"),
             status=data.get("status", "active"),
+            teacher_id=data.get("teacher_id"),
+            concept_key=data.get("concept_key"),
+            trust_provenance=data.get("trust_provenance"),
         )
 
 
@@ -92,14 +101,24 @@ def make_grain(
     trusted: bool = False,
     source_name: str | None = None,
     source_sha256: str | None = None,
+    teacher_id: str | None = None,
+    concept_key: str | None = None,
+    trust_provenance: dict | None = None,
 ) -> Grain:
     embedding = hashed_bow_embedding(text)
     if grain_id is None:
         # Stable id from the text. When a source document is attached,
         # include its checksum so a trusted school-mode grain can sit
         # beside an untrusted grain of the same words until sleep.
-        if source_sha256:
-            material = f"{text}\n{source_sha256}\n{'trusted' if trusted else 'untrusted'}"
+        # Teacher injections also include teacher_id so two teachers can
+        # hold different grains about the same concept until a conflict
+        # is resolved.
+        if source_sha256 or teacher_id:
+            material = (
+                f"{text}\n{source_sha256 or ''}\n"
+                f"{'trusted' if trusted else 'untrusted'}\n"
+                f"{teacher_id or ''}"
+            )
         else:
             material = text
         grain_id = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
@@ -111,6 +130,9 @@ def make_grain(
         trusted=trusted,
         source_name=source_name,
         source_sha256=source_sha256,
+        teacher_id=teacher_id,
+        concept_key=concept_key,
+        trust_provenance=dict(trust_provenance) if trust_provenance else None,
     )
 
 
@@ -189,6 +211,9 @@ class InMemorySandPit(SandPit):
         trusted: bool = False,
         source_name: str | None = None,
         source_sha256: str | None = None,
+        teacher_id: str | None = None,
+        concept_key: str | None = None,
+        trust_provenance: dict | None = None,
     ) -> Grain:
         grain = make_grain(
             text,
@@ -197,6 +222,9 @@ class InMemorySandPit(SandPit):
             trusted=trusted,
             source_name=source_name,
             source_sha256=source_sha256,
+            teacher_id=teacher_id,
+            concept_key=concept_key,
+            trust_provenance=trust_provenance,
         )
         self.promote(grain)
         return grain
@@ -250,6 +278,19 @@ class InMemorySandPit(SandPit):
             raise KeyError(f"unknown active grain: {grain_id}")
         grain.status = "superseded"
         grain.superseded_by = trusted_id
+        self._superseded[grain.id] = grain
+        return grain
+
+    def park(self, grain_id: str, reason: str = "conflict") -> Grain:
+        """Take an active grain out of the pit and keep it, never delete it.
+
+        Used when two teachers disagree: both grains leave the active
+        index until a human or a trusted source breaks the tie.
+        """
+        grain = self._grains.pop(grain_id, None)
+        if grain is None:
+            raise KeyError(f"unknown active grain: {grain_id}")
+        grain.status = reason
         self._superseded[grain.id] = grain
         return grain
 

@@ -12,3 +12,8 @@ htmlcov/
 data/
 !data/.gitkeep
 
+
+# Teacher arm token is generated locally on first run. Never commit it.
+data/teacher_token
+config/teacher_token
+*.token

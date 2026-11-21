@@ -1,0 +1,7 @@
+{
+  "description": "Throttle limits for the teacher arm. Raise them on a bigger machine so volume scales with hardware.",
+  "max_batch_size": 8,
+  "rate_per_second": 4.0,
+  "burst": 16,
+  "max_queue": 32
+}
