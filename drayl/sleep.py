@@ -50,13 +50,26 @@ class SleepMode:
         sandpit: InMemorySandPit,
         staging_path: str | Path,
         cosine_threshold: float = 0.92,
+        pit_status=None,
     ):
         self.sandpit = sandpit
         self.staging_path = Path(staging_path)
         self.cosine_threshold = cosine_threshold
         self.staging_path.parent.mkdir(parents=True, exist_ok=True)
+        # Optional P39 hook: mark the pit busy while sleep runs so the
+        # teacher arm queues injections instead of writing mid-pass.
+        self.pit_status = pit_status
 
     def run(self) -> SleepReport:
+        if self.pit_status is not None:
+            self.pit_status.begin_sleep()
+        try:
+            return self._run()
+        finally:
+            if self.pit_status is not None:
+                self.pit_status.end_sleep()
+
+    def _run(self) -> SleepReport:
         report = SleepReport(staging_path=self.staging_path)
         # Group active grains by quadrant. Only compare inside a quadrant.
         by_quadrant: dict[str, list] = {}

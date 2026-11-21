@@ -47,6 +47,8 @@ class ComplianceGate:
         self.staging_path = Path(staging_path)
         self.cosine_threshold = cosine_threshold
         self.staging_path.parent.mkdir(parents=True, exist_ok=True)
+        # Optional hook (P39 teacher arm): called after a grain is promoted.
+        self.on_promoted = None
 
     def offer(
         self,
@@ -56,6 +58,9 @@ class ComplianceGate:
         trusted: bool = False,
         source_name: str | None = None,
         source_sha256: str | None = None,
+        teacher_id: str | None = None,
+        concept_key: str | None = None,
+        trust_provenance: dict | None = None,
     ) -> GateDecision:
         if not text or not text.strip():
             return GateDecision(
@@ -72,14 +77,17 @@ class ComplianceGate:
             trusted=trusted,
             source_name=source_name,
             source_sha256=source_sha256,
+            teacher_id=teacher_id,
+            concept_key=concept_key,
+            trust_provenance=trust_provenance,
         )
 
         if trusted:
-            return self._offer_trusted(candidate, text)
+            return self._finish(self._offer_trusted(candidate, text))
 
         nearest_id, nearest_score = self._nearest(candidate.embedding)
         if nearest_id is not None and nearest_score >= self.cosine_threshold:
-            path = self._stage(
+            path = self.stage(
                 {
                     "reason": "near_duplicate",
                     "text": text,
@@ -88,6 +96,9 @@ class ComplianceGate:
                     "nearest_id": nearest_id,
                     "cosine": nearest_score,
                     "trusted": False,
+                    "teacher_id": teacher_id,
+                    "concept_key": concept_key,
+                    "trust_provenance": trust_provenance,
                     "pending_checks": list(PENDING_CHECKS),
                 }
             )
@@ -102,13 +113,13 @@ class ComplianceGate:
         # Unique coverage passed. The 'improves later retrieval' check is
         # still a stub, so it is recorded as pending and does not block.
         self.sandpit.promote(candidate)
-        return GateDecision(
+        return self._finish(GateDecision(
             accepted=True,
             reason="promoted",
             grain=candidate,
             nearest_id=nearest_id,
             nearest_cosine=nearest_score,
-        )
+        ))
 
     def _offer_trusted(self, candidate: Grain, text: str) -> GateDecision:
         # Exact duplicate of an existing trusted grain is still rejected.
@@ -116,7 +127,7 @@ class ComplianceGate:
         # override those untrusted grains later.
         for grain in self.sandpit.query(trusted=True, include_superseded=False):
             if _normalised(grain.text) == _normalised(text):
-                path = self._stage(
+                path = self.stage(
                     {
                         "reason": "exact-duplicate",
                         "text": text,
@@ -160,7 +171,17 @@ class ComplianceGate:
             return None, 0.0
         return best_id, best_score
 
-    def _stage(self, record: dict) -> Path:
+    def stage(self, record: dict) -> Path:
+        """Append one record to the staging JSONL file."""
         with self.staging_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record) + "\n")
         return self.staging_path
+
+    def _finish(self, decision: GateDecision) -> GateDecision:
+        if (
+            decision.accepted
+            and decision.grain is not None
+            and self.on_promoted is not None
+        ):
+            self.on_promoted(decision.grain)
+        return decision
