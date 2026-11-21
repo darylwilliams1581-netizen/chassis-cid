@@ -4,6 +4,13 @@
     python scripts/teacher.py serve
     python scripts/teacher.py conflicts
     python scripts/teacher.py resolve CONFLICT_ID --choose GRAIN_ID
+    python scripts/teacher.py show GRAIN_ID
+
+Every accepted change is committed to the durable store
+(data/drayl.sqlite3 by default) before success is reported. The JSON
+file given by --data is imported once (insert-if-absent, never
+overwritten in the store) and is rewritten as a snapshot on a clean stop,
+as an extra safeguard only.
 """
 
 from __future__ import annotations
@@ -18,15 +25,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from drayl.gate import ComplianceGate  # noqa: E402
-from drayl.memory import InMemoryMemory  # noqa: E402
 from drayl.pit_status import PitStatus  # noqa: E402
 from drayl.quadrants import load_quadrant_map  # noqa: E402
 from drayl.sandpit import InMemorySandPit  # noqa: E402
 from drayl.sleep import SleepMode  # noqa: E402
+from drayl.store import DurableStore, PersistenceError, atomic_write_json  # noqa: E402
 from drayl.teacher import TeacherArm, TeacherLimits  # noqa: E402
 from drayl.teacher_server import BindError, check_bind_host, ensure_token, serve_forever  # noqa: E402
 
 DEFAULT_DATA = ROOT / "data" / "sandpit.json"
+DEFAULT_STORE = ROOT / "data" / "drayl.sqlite3"
 DEFAULT_STAGING = ROOT / "data" / "near-misses.jsonl"
 DEFAULT_CONFLICTS = ROOT / "data" / "conflicts.jsonl"
 DEFAULT_TOKEN = ROOT / "data" / "teacher_token"
@@ -35,11 +43,17 @@ DEFAULT_LIMITS = ROOT / "config" / "teacher_limits.json"
 
 
 def _load_arm(args) -> TeacherArm:
-    data = Path(args.data)
-    if data.is_file():
-        sandpit = InMemorySandPit.load(data)
-    else:
-        sandpit = InMemorySandPit()
+    store = DurableStore(args.store)
+    imported = store.merge_legacy(args.data, args.conflicts)
+    for warning in imported["warnings"]:
+        print(f"warning: {warning}", file=sys.stderr)
+    if imported["grains"] or imported["conflicts"]:
+        print(
+            f"Imported {imported['grains']} grains and {imported['conflicts']} conflicts "
+            f"from the older JSON files (left in place).",
+            file=sys.stderr,
+        )
+    sandpit = InMemorySandPit()
     gate = ComplianceGate(sandpit, staging_path=args.staging)
     pit_status = PitStatus()
     arm = TeacherArm(
@@ -50,22 +64,35 @@ def _load_arm(args) -> TeacherArm:
         limits=TeacherLimits.from_file(args.limits),
         pit_status=pit_status,
         conflicts_path=args.conflicts,
+        store=store,
     )
-    arm._data_path = data  # type: ignore[attr-defined]
+    arm._data_path = Path(args.data)  # type: ignore[attr-defined]
     return arm
 
 
 def _save(arm: TeacherArm) -> None:
+    """Extra safeguard on a clean stop: commit, then write a JSON snapshot."""
+    arm.checkpoint()
     path = getattr(arm, "_data_path", None)
     if path is not None:
-        arm.sandpit.save(path)
+        payload = {
+            "version": 39,
+            "grains": [g.record() for g in arm.sandpit.all_grains()],
+            "superseded": [
+                g.record()
+                for g in arm.sandpit.all_grains(include_superseded=True)
+                if g.status != "active"
+            ],
+        }
+        atomic_write_json(path, payload)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="D-RAYL P39 teacher arm: localhost inject socket and conflict tools."
     )
-    parser.add_argument("--data", default=str(DEFAULT_DATA), help="Sand pit JSON file.")
+    parser.add_argument("--data", default=str(DEFAULT_DATA), help="Sand pit JSON snapshot.")
+    parser.add_argument("--store", default=str(DEFAULT_STORE), help="Durable SQLite store.")
     parser.add_argument("--staging", default=str(DEFAULT_STAGING))
     parser.add_argument("--conflicts", default=str(DEFAULT_CONFLICTS))
     parser.add_argument("--config", default=None, help="Quadrant map JSON.")
@@ -85,7 +112,10 @@ def build_parser() -> argparse.ArgumentParser:
     resolve.add_argument("--choose", required=True, help="Grain id to keep.")
     resolve.add_argument("--by", default="human", help="Who is breaking the tie.")
 
-    sleep = sub.add_parser("sleep", help="Run sleep mode, marking the pit busy first.")
+    show = sub.add_parser("show", help="Print one stored grain and its audit trail.")
+    show.add_argument("grain_id")
+
+    sub.add_parser("sleep", help="Run sleep mode, marking the pit busy first.")
     return parser
 
 
@@ -103,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         server = serve_forever(arm, token, host=args.host, port=args.port)
         print(f"Teacher arm listening on {server.url}")
         print(f"Token file: {args.token_file}")
+        print(f"Durable store: {args.store}")
         print("Send injections to POST /inject with header X-DRAYL-Token.")
         print("This service never calls out. Teachers must be bridged locally.")
         try:
@@ -111,7 +142,10 @@ def main(argv: list[str] | None = None) -> int:
                 thread.join()
         except KeyboardInterrupt:
             server.shutdown()
-            _save(arm)
+            try:
+                _save(arm)
+            except (PersistenceError, OSError) as exc:
+                print(f"Shutdown snapshot failed (store is still intact): {exc}", file=sys.stderr)
             print("\nStopped.")
         return 0
 
@@ -120,13 +154,25 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"open": open_ones, "count": len(open_ones)}, indent=2))
         return 0
 
+    if args.command == "show":
+        stored = arm.store.get_grain(args.grain_id) if arm.store is not None else None
+        if stored is None:
+            print(f"No stored grain {args.grain_id}", file=sys.stderr)
+            return 1
+        stored.pop("embedding", None)
+        audit = arm.store.audit(ref_id=args.grain_id)
+        print(json.dumps({"grain": stored, "audit": audit}, indent=2, default=str))
+        return 0
+
     if args.command == "resolve":
         try:
             result = arm.resolve(args.conflict_id, args.choose, resolved_by=args.by)
+        except PersistenceError as exc:
+            print(f"NOT saved: {exc}", file=sys.stderr)
+            return 3
         except (KeyError, ValueError) as exc:
             print(f"Could not resolve: {exc}", file=sys.stderr)
             return 1
-        _save(arm)
         print(json.dumps(result, indent=2, default=str))
         return 0
 
@@ -134,8 +180,12 @@ def main(argv: list[str] | None = None) -> int:
         sleeper = SleepMode(
             arm.sandpit, staging_path=args.staging, pit_status=arm.pit_status
         )
-        report = sleeper.run()
-        _save(arm)
+        try:
+            with arm.transaction("sleep"):
+                report = sleeper.run()
+        except PersistenceError as exc:
+            print(f"NOT saved: {exc}", file=sys.stderr)
+            return 3
         print(json.dumps(report.as_dict(), indent=2))
         return 0
 

@@ -90,6 +90,25 @@ result = arm.inject(
 
 List open conflicts with `python scripts/teacher.py conflicts`.
 
+## Saving lessons (durable store)
+
+A lesson is only reported as saved once it is on disk. Every accepted change (a promoted grain, a staged near-miss, a conflict opened or resolved, and the audit line for it) is written to `data/drayl.sqlite3` in one SQLite transaction, and that transaction is committed **before** the teacher gets HTTP 200 (or 409 for a staged conflict). Responses carry `"saved": true` and a `store_generation` number.
+
+- **Killed mid-way?** SQLite's journal rolls back anything half-written, so you restart to the last committed lesson: never a half-saved one.
+- **Two teachers at once?** Writes queue on SQLite's write lock (`BEGIN IMMEDIATE`). Two processes (the server and the `resolve` command, say) can share the file: each one reloads if the other committed first, so neither overwrites the other's work.
+- **Save failed** (disk full, file locked)? You get HTTP **503** with `"status": "not_saved"` and `"saved": false`, the in-memory pit is put back to the last saved state, and nothing already stored is touched.
+- **Nothing is deleted.** The database refuses DELETE on grains, conflicts, staging and audit rows. Superseded and parked grains keep their rows.
+- **Older `data/sandpit.json` and `data/conflicts.jsonl`** are imported on start (insert-if-missing only; a stored grain is never overwritten) and the files are left as they are.
+- **Ctrl+C** still writes a JSON snapshot to `--data`, now via a unique temp file and an atomic rename. It is an extra safeguard, not the record.
+
+Look up one stored grain and its audit trail:
+
+```bash
+python scripts/teacher.py show GRAIN_ID
+```
+
+This changes *when* things are saved, not *what* is decided: trust, approval and conflict rules are the same as before.
+
 ## How to run the tests
 
 ```bash

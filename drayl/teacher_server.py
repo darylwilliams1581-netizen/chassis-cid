@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from drayl.store import PersistenceError
 from drayl.teacher import TeacherArm, parse_injections
 
 ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -70,6 +71,9 @@ def _extract_token(headers) -> str | None:
 
 
 class TeacherHTTPServer(ThreadingHTTPServer):
+    # Python's default listen backlog is 5; simultaneous teachers beyond
+    # that get "connection reset". Writes are still serialised by the arm.
+    request_queue_size = 64
     def __init__(self, host: str, port: int, arm: TeacherArm, token: str):
         host = check_bind_host(host)
         self.arm = arm
@@ -129,6 +133,24 @@ class TeacherHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._send(401, {"status": "unauthorized", "http_status": 401})
             return
+        if path.startswith("/grains/"):
+            grain_id = path[len("/grains/"):]
+            grain = self.server.arm.sandpit.get(grain_id)
+            store = self.server.arm.store
+            stored = store.get_grain(grain_id) if store is not None else None
+            if grain is None and stored is None:
+                self._send(404, {"status": "not_found", "http_status": 404})
+                return
+            self._send(
+                200,
+                {
+                    "status": "ok",
+                    "http_status": 200,
+                    "grain": grain.record() if grain is not None else None,
+                    "stored": stored,
+                },
+            )
+            return
         if path == "/conflicts":
             self._send(
                 200,
@@ -185,6 +207,17 @@ class TeacherHandler(BaseHTTPRequestHandler):
                     str(chosen_id),
                     resolved_by=str(payload.get("resolved_by") or "human"),
                 )
+            except PersistenceError as exc:
+                self._send(
+                    503,
+                    {
+                        "status": "not_saved",
+                        "http_status": 503,
+                        "saved": False,
+                        "message": f"NOT saved; the conflict is unchanged: {exc}",
+                    },
+                )
+                return
             except (KeyError, ValueError) as exc:
                 self._send(
                     400,
@@ -195,7 +228,19 @@ class TeacherHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/drain":
-            drained = self.server.arm.drain()
+            try:
+                drained = self.server.arm.drain()
+            except PersistenceError as exc:
+                self._send(
+                    503,
+                    {
+                        "status": "not_saved",
+                        "http_status": 503,
+                        "saved": False,
+                        "message": f"NOT saved; queued work kept in the queue: {exc}",
+                    },
+                )
+                return
             self._send(
                 200,
                 {
