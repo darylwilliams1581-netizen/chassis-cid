@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "description": "Static quadrant map. Changing boundaries means re-tagging grains, not rebuilding the index.",
+  "quadrants": [
+    {
+      "id": "numbers",
+      "name": "Numbers",
+      "capability_tags": [
+        "math",
+        "arithmetic",
+        "number",
+        "numbers",
+        "count",
+        "quantity",
+        "calculate",
+        "plus",
+        "minus"
+      ],
+      "description": "Numbers, arithmetic and quantities."
+    },
+    {
+      "id": "grammar_speech",
+      "name": "Grammar and speech",
+      "capability_tags": [
+        "grammar",
+        "speech",
+        "language",
+        "syntax",
+        "pronounce",
+        "wording",
+        "sentence",
+        "symbol",
+        "symbols",
+        "drayl"
+      ],
+      "description": "Grammar, wording and speech."
+    },
+    {
+      "id": "facts",
+      "name": "Facts",
+      "capability_tags": [
+        "fact",
+        "facts",
+        "knowledge",
+        "who",
+        "what",
+        "where",
+        "when",
+        "mate",
+        "cid"
+      ],
+      "description": "General knowledge and factual recall."
+    },
+    {
+      "id": "personal",
+      "name": "Personal",
+      "capability_tags": [
+        "personal",
+        "preference",
+        "remember",
+        "about_user",
+        "family"
+      ],
+      "description": "Things about the user and their preferences."
+    },
+    {
+      "id": "misc",
+      "name": "Miscellaneous",
+      "capability_tags": [
+        "misc",
+        "other",
+        "general",
+        "hello",
+        "hi"
+      ],
+      "description": "Anything that does not fit a more specific quadrant."
+    }
+  ]
+}
