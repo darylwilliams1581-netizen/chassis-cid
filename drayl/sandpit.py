@@ -319,6 +319,27 @@ class InMemorySandPit(SandPit):
             grain.last_access = now
         return picked
 
+    def replace_all(self, records: Iterable[dict]) -> None:
+        """Reload every grain in place from stored records.
+
+        Keeps each record's own status ("active", "superseded" or
+        "conflict"). Used by the durable store after a failed save or when
+        another process committed first. Callers holding this pit object
+        (router, gate) see the reloaded grains.
+        """
+        grains: dict[str, Grain] = {}
+        parked: dict[str, Grain] = {}
+        for record in records:
+            grain = Grain.from_record(record)
+            if grain.status == "active":
+                grains[grain.id] = grain
+            else:
+                parked[grain.id] = grain
+        self._grains.clear()
+        self._grains.update(grains)
+        self._superseded.clear()
+        self._superseded.update(parked)
+
     def save(self, path: str | Path) -> Path:
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)

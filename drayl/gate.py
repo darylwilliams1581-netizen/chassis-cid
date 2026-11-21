@@ -49,6 +49,10 @@ class ComplianceGate:
         self.staging_path.parent.mkdir(parents=True, exist_ok=True)
         # Optional hook (P39 teacher arm): called after a grain is promoted.
         self.on_promoted = None
+        # Optional hook (durable store): if set and it returns True, the
+        # staged record was buffered to be committed with the rest of the
+        # change, and is appended to the JSONL file only after that commit.
+        self.stage_sink = None
 
     def offer(
         self,
@@ -173,6 +177,11 @@ class ComplianceGate:
 
     def stage(self, record: dict) -> Path:
         """Append one record to the staging JSONL file."""
+        if self.stage_sink is not None and self.stage_sink(record):
+            return self.staging_path
+        return self.append_staging(record)
+
+    def append_staging(self, record: dict) -> Path:
         with self.staging_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record) + "\n")
         return self.staging_path

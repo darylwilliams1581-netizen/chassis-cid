@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -22,6 +23,7 @@ from drayl.gate import ComplianceGate, GateDecision
 from drayl.pit_status import PitStatus
 from drayl.quadrants import QuadrantMap, load_quadrant_map
 from drayl.sandpit import Grain, InMemorySandPit, make_grain
+from drayl.store import DurableStore, PersistenceError
 
 # Same concept if two grains share a concept key, or their vectors are
 # at least this similar.
@@ -284,6 +286,10 @@ class BatchResult:
     items: list[InjectResult] = field(default_factory=list)
     queued_count: int | None = None
     queue_position: int | None = None
+    # Durable store only: True once the change is committed to disk,
+    # False if it was not saved. None when the arm has no store.
+    saved: bool | None = None
+    store_generation: int | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -292,8 +298,29 @@ class BatchResult:
             "message": self.message,
             "queued_count": self.queued_count,
             "queue_position": self.queue_position,
+            "saved": self.saved,
+            "store_generation": self.store_generation,
             "items": [item.as_dict() for item in self.items],
         }
+
+
+@dataclass
+class _Txn:
+    """One outer store transaction, shared by any nested mutations."""
+
+    op: str
+    generation: int | None = None
+    staged: list[dict] = field(default_factory=list)
+
+
+def _grain_signature(record: dict) -> str:
+    # The embedding is derived from the text and never changes, so leave
+    # it out of the change check to keep the diff cheap.
+    return json.dumps(
+        {k: v for k, v in record.items() if k != "embedding"},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 @dataclass
@@ -373,6 +400,7 @@ class TeacherArm:
         conflicts_path: str | Path | None = None,
         concept_cosine: float = DEFAULT_CONCEPT_COSINE,
         low_agreement: float = DEFAULT_LOW_AGREEMENT,
+        store: DurableStore | None = None,
     ):
         self.sandpit = sandpit
         self.gate = gate
@@ -395,7 +423,19 @@ class TeacherArm:
         self._buckets: dict[str, _TokenBucket] = {}
         self._queue: list[_QueuedBatch] = []
         self._conflicts: list[dict] = []
-        self._load_conflicts()
+        # Durable store (optional). Without it the arm behaves exactly as
+        # in P39: state lives in memory and the CLI saves it on Ctrl+C.
+        self.store = store
+        self._txn: _Txn | None = None
+        self._txn_depth = 0
+        self._generation = -1
+        self._committed_grains: dict[str, tuple[str, str, str | None]] = {}
+        self._committed_conflicts: dict[str, tuple[str, str]] = {}
+        if self.store is None:
+            self._load_conflicts()
+        else:
+            self._reload_from_store()
+            self.gate.stage_sink = self._buffer_staged
         # Drain queued work when sleep or a rebuild finishes.
         self.pit_status.on_idle = self.drain
         # School-mode (or any) trusted promotion can break a tie later.
@@ -509,9 +549,23 @@ class TeacherArm:
                 )
 
             if not skip_busy and self.pit_status.busy:
-                return self._enqueue(injections, teacher_id)
+                result = self._enqueue(injections, teacher_id)
+                if self.store is not None:
+                    # Queued work is held in memory only and is not saved.
+                    result.saved = False
+                return result
 
-            items = [self._accept_one(item) for item in injections]
+            outer = self._txn_depth == 0
+            try:
+                with self._mutation(f"inject teacher={teacher_id} n={len(injections)}") as txn:
+                    items = [self._accept_one(item) for item in injections]
+            except PersistenceError as exc:
+                return BatchResult(
+                    status="not_saved",
+                    http_status=503,
+                    message=f"NOT saved; nothing was promoted or staged: {exc}",
+                    saved=False,
+                )
         # Pick a batch-level status: conflict wins if any, else first item.
         if any(item.status == "conflict" for item in items):
             status = "conflict"
@@ -519,7 +573,11 @@ class TeacherArm:
         else:
             status = items[0].status if len(items) == 1 else "ok"
             http_status = items[0].http_status if len(items) == 1 else 200
-        return BatchResult(status=status, http_status=http_status, items=items)
+        result = BatchResult(status=status, http_status=http_status, items=items)
+        if self.store is not None and outer:
+            result.saved = True
+            result.store_generation = txn.generation
+        return result
 
     def _enqueue(self, injections: list[Injection], teacher_id: str) -> BatchResult:
         size = len(injections)
@@ -570,11 +628,26 @@ class TeacherArm:
                 return drained
             pending = list(self._queue)
             self._queue.clear()
-        for batch in pending:
-            # Already admitted past the rate limit when it was queued.
-            drained.append(
-                self.inject_many(batch.injections, skip_rate_limit=True, skip_busy=True)
-            )
+            if not pending:
+                return drained
+            outer = self._txn_depth == 0
+            try:
+                with self._mutation(f"drain batches={len(pending)}") as txn:
+                    for batch in pending:
+                        # Already admitted past the rate limit when it was queued.
+                        drained.append(
+                            self.inject_many(
+                                batch.injections, skip_rate_limit=True, skip_busy=True
+                            )
+                        )
+            except PersistenceError:
+                # Put the work back; none of it was saved.
+                self._queue[:0] = pending
+                raise
+            if self.store is not None and outer:
+                for item in drained:
+                    item.saved = True
+                    item.store_generation = txn.generation
         return drained
 
     def pending_count(self) -> int:
@@ -821,6 +894,9 @@ class TeacherArm:
             self._conflicts.append(json.loads(line))
 
     def _save_conflicts(self) -> None:
+        if self.store is not None:
+            # Conflicts are committed with the rest of the change.
+            return
         self.conflicts_path.parent.mkdir(parents=True, exist_ok=True)
         with self.conflicts_path.open("w", encoding="utf-8") as handle:
             for record in self._conflicts:
@@ -839,75 +915,83 @@ class TeacherArm:
         resolved_by: str = "human",
     ) -> dict:
         """Human (or a later caller) chooses one grain. The other stays staged."""
-        with self._lock:
-            record = self._conflict_by_id(conflict_id)
-            if record is None:
-                raise KeyError(f"unknown conflict: {conflict_id}")
-            if record.get("status") != "open":
-                raise ValueError(f"conflict {conflict_id} is already {record.get('status')}")
-            chosen = None
-            for payload in record["grains"]:
-                if payload["id"] == chosen_id:
-                    chosen = Grain.from_record(payload)
-                    break
-            if chosen is None:
-                raise KeyError(f"grain {chosen_id} is not part of conflict {conflict_id}")
-            decision = None
-            already_live = chosen.id in {
-                g.id for g in self.sandpit.all_grains(include_superseded=False)
-            }
-            if already_live:
+        outer = self._txn_depth == 0
+        with self._mutation(f"resolve conflict={conflict_id} by={resolved_by}") as txn:
+            result = self._resolve_locked(conflict_id, chosen_id, resolved_by)
+        if self.store is not None and outer:
+            result["saved"] = True
+            result["store_generation"] = txn.generation
+        return result
+
+    def _resolve_locked(self, conflict_id: str, chosen_id: str, resolved_by: str) -> dict:
+        record = self._conflict_by_id(conflict_id)
+        if record is None:
+            raise KeyError(f"unknown conflict: {conflict_id}")
+        if record.get("status") != "open":
+            raise ValueError(f"conflict {conflict_id} is already {record.get('status')}")
+        chosen = None
+        for payload in record["grains"]:
+            if payload["id"] == chosen_id:
+                chosen = Grain.from_record(payload)
+                break
+        if chosen is None:
+            raise KeyError(f"grain {chosen_id} is not part of conflict {conflict_id}")
+        decision = None
+        already_live = chosen.id in {
+            g.id for g in self.sandpit.all_grains(include_superseded=False)
+        }
+        if already_live:
+            decision = GateDecision(
+                accepted=True,
+                reason="already-promoted",
+                grain=self.sandpit.get(chosen.id) or chosen,
+                pending_checks=() if chosen.trusted else ("improves_later_retrieval",),
+            )
+        else:
+            # Temporarily disable the promotion hook so resolve does
+            # not re-enter consider_trusted_grain.
+            hook = self.gate.on_promoted
+            self.gate.on_promoted = None
+            try:
+                decision = self.gate.offer(
+                    chosen.text,
+                    chosen.quadrant,
+                    grain_id=chosen.id,
+                    trusted=bool(chosen.trusted),
+                    source_name=chosen.source_name,
+                    source_sha256=chosen.source_sha256,
+                    teacher_id=chosen.teacher_id,
+                    concept_key=chosen.concept_key,
+                    trust_provenance=chosen.trust_provenance,
+                )
+            finally:
+                self.gate.on_promoted = hook
+            if not decision.accepted and decision.reason in {
+                "near_duplicate",
+                "exact-duplicate",
+            }:
+                # Near-duplicate of a parked self, or a trusted copy
+                # that is already live. Restore the chosen grain.
+                chosen.status = "active"
+                chosen.superseded_by = None
+                self.sandpit.promote(chosen)
                 decision = GateDecision(
                     accepted=True,
-                    reason="already-promoted",
-                    grain=self.sandpit.get(chosen.id) or chosen,
+                    reason="restored-from-conflict",
+                    grain=chosen,
                     pending_checks=() if chosen.trusted else ("improves_later_retrieval",),
                 )
-            else:
-                # Temporarily disable the promotion hook so resolve does
-                # not re-enter consider_trusted_grain.
-                hook = self.gate.on_promoted
-                self.gate.on_promoted = None
-                try:
-                    decision = self.gate.offer(
-                        chosen.text,
-                        chosen.quadrant,
-                        grain_id=chosen.id,
-                        trusted=bool(chosen.trusted),
-                        source_name=chosen.source_name,
-                        source_sha256=chosen.source_sha256,
-                        teacher_id=chosen.teacher_id,
-                        concept_key=chosen.concept_key,
-                        trust_provenance=chosen.trust_provenance,
-                    )
-                finally:
-                    self.gate.on_promoted = hook
-                if not decision.accepted and decision.reason in {
-                    "near_duplicate",
-                    "exact-duplicate",
-                }:
-                    # Near-duplicate of a parked self, or a trusted copy
-                    # that is already live. Restore the chosen grain.
-                    chosen.status = "active"
-                    chosen.superseded_by = None
-                    self.sandpit.promote(chosen)
-                    decision = GateDecision(
-                        accepted=True,
-                        reason="restored-from-conflict",
-                        grain=chosen,
-                        pending_checks=() if chosen.trusted else ("improves_later_retrieval",),
-                    )
-                elif not decision.accepted:
-                    raise ValueError(f"gate rejected the chosen grain: {decision.reason}")
-            record["status"] = "resolved"
-            record["resolved_at"] = time.time()
-            record["resolved_by"] = resolved_by
-            record["chosen_id"] = chosen_id
-            self._save_conflicts()
-            return {
-                "conflict": record,
-                "decision_reason": decision.reason if decision is not None else None,
-            }
+            elif not decision.accepted:
+                raise ValueError(f"gate rejected the chosen grain: {decision.reason}")
+        record["status"] = "resolved"
+        record["resolved_at"] = time.time()
+        record["resolved_by"] = resolved_by
+        record["chosen_id"] = chosen_id
+        self._save_conflicts()
+        return {
+            "conflict": record,
+            "decision_reason": decision.reason if decision is not None else None,
+        }
 
     def consider_trusted_grain(self, grain: Grain) -> list[str]:
         """A trusted source arriving later may break open ties.
@@ -974,6 +1058,133 @@ class TeacherArm:
             if record.get("id") == conflict_id:
                 return record
         return None
+
+
+    # ---- durable store ----
+
+    @contextmanager
+    def _mutation(self, op: str):
+        """Run a change under the arm lock; with a store, commit it first.
+
+        Nested calls (for example a trusted grain resolving a conflict from
+        inside an inject) join the outer transaction. Only the outermost
+        call commits. If the commit fails, the in-memory pit and conflicts
+        are reloaded from the last committed state and PersistenceError is
+        raised, so the caller can never report the change as saved.
+        """
+        with self._lock:
+            if self.store is None:
+                yield _Txn(op=op)
+                return
+            if self._txn_depth > 0:
+                self._txn_depth += 1
+                try:
+                    yield self._txn
+                finally:
+                    self._txn_depth -= 1
+                return
+            committed_gen = self.store.begin()
+            if committed_gen != self._generation:
+                # Another process committed since we last loaded.
+                self._reload_from_store()
+            txn = _Txn(op=op)
+            self._txn = txn
+            self._txn_depth = 1
+            try:
+                yield txn
+                self._commit(txn)
+            except BaseException:
+                self.store.rollback()
+                self._reload_from_store()
+                raise
+            finally:
+                self._txn_depth = 0
+                self._txn = None
+
+    def transaction(self, op: str = "manual"):
+        """Public wrapper so the CLI can make sleep mode one durable change."""
+        return self._mutation(op)
+
+    def _buffer_staged(self, record: dict) -> bool:
+        if self._txn is None:
+            return False  # outside a transaction: plain JSONL append
+        self._txn.staged.append(dict(record))
+        return True
+
+    def _commit(self, txn: _Txn) -> None:
+        grains: list[tuple[dict, dict | None]] = []
+        new_grains: dict[str, tuple[str, str, str | None]] = {}
+        for grain in self.sandpit.all_grains(include_superseded=True):
+            record = grain.record()
+            sig = _grain_signature(record)
+            previous = self._committed_grains.get(grain.id)
+            if previous is None or previous[0] != sig:
+                grains.append(
+                    (
+                        record,
+                        None
+                        if previous is None
+                        else {"status": previous[1], "superseded_by": previous[2]},
+                    )
+                )
+                new_grains[grain.id] = (sig, record["status"], record.get("superseded_by"))
+        conflicts: list[tuple[dict, dict | None]] = []
+        new_conflicts: dict[str, tuple[str, str]] = {}
+        for record in self._conflicts:
+            text = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            previous = self._committed_conflicts.get(record["id"])
+            if previous is None or previous[0] != text:
+                conflicts.append(
+                    (json.loads(text), None if previous is None else {"status": previous[1]})
+                )
+                new_conflicts[record["id"]] = (text, str(record.get("status")))
+        if not grains and not conflicts and not txn.staged:
+            self.store.rollback()
+            txn.generation = self._generation
+            return
+        generation = self.store.write_changes(txn.op, grains, conflicts, txn.staged)
+        self._committed_grains.update(new_grains)
+        self._committed_conflicts.update(new_conflicts)
+        self._generation = generation
+        txn.generation = generation
+        # The JSONL near-miss file is a readable mirror; the store is the
+        # record. Append only after the commit so it never shows unsaved work.
+        for record in txn.staged:
+            try:
+                self.gate.append_staging(record)
+            except OSError:
+                pass
+
+    def _reload_from_store(self) -> None:
+        assert self.store is not None
+        grain_records = self.store.load_grains()
+        self.sandpit.replace_all(grain_records)
+        self._committed_grains = {}
+        for record in grain_records:
+            grain = Grain.from_record(record)
+            fresh = grain.record()
+            self._committed_grains[grain.id] = (
+                _grain_signature(fresh),
+                fresh["status"],
+                fresh.get("superseded_by"),
+            )
+        self._conflicts = self.store.load_conflicts()
+        self._committed_conflicts = {
+            record["id"]: (
+                json.dumps(record, sort_keys=True, separators=(",", ":")),
+                str(record.get("status")),
+            )
+            for record in self._conflicts
+        }
+        self._generation = self.store.generation()
+
+    def checkpoint(self) -> int | None:
+        """Commit anything changed outside a transaction (e.g. heat stats)."""
+        if self.store is None:
+            return None
+        with self._mutation("checkpoint") as txn:
+            pass
+        return txn.generation
 
 
 # ---- helpers used by the HTTP layer and the CLI ----
