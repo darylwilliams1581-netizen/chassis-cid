@@ -1,0 +1,10 @@
+[project]
+name = "drayl-base"
+version = "0.36.0"
+description = "P36 scaffold of the D-RAYL base layer"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
