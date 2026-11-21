@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>D-RAYL Chat Box v1</title>
+  <style>
+    :root {
+      --bg: #05080a;
+      --panel: #0b1114;
+      --ink: #e8fbf6;
+      --muted: #8aa8a1;
+      --aqua: #00e5c0;
+      --aqua-dim: #00b89a;
+      --line: #16302c;
+      --you: #12221f;
+      --danger: #ff8a80;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Segoe UI", system-ui, sans-serif;
+    }
+    body {
+      display: flex;
+      flex-direction: column;
+      min-height: 100%;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 16px 20px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .eyes {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .eye {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--aqua);
+      box-shadow: 0 0 12px var(--aqua), 0 0 2px #fff;
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.15rem;
+      font-weight: 650;
+      letter-spacing: 0.02em;
+    }
+    .sub {
+      color: var(--muted);
+      font-size: 0.85rem;
+      margin-top: 2px;
+    }
+    .badge {
+      margin-left: auto;
+      border: 1px solid var(--aqua-dim);
+      color: var(--aqua);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 0.75rem;
+      letter-spacing: 0.04em;
+    }
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      max-width: 860px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 16px 16px 0;
+      min-height: 0;
+    }
+    #log {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding-bottom: 12px;
+    }
+    .msg {
+      max-width: 85%;
+      padding: 10px 14px;
+      border-radius: 14px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .msg.you {
+      align-self: flex-end;
+      background: var(--you);
+      border: 1px solid var(--line);
+    }
+    .msg.mate {
+      align-self: flex-start;
+      background: var(--panel);
+      border: 1px solid var(--aqua-dim);
+    }
+    .msg .meta {
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 0.75rem;
+      white-space: normal;
+    }
+    .composer {
+      display: flex;
+      gap: 8px;
+      padding: 12px 0;
+    }
+    #input {
+      flex: 1;
+      background: var(--panel);
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: inherit;
+      outline: none;
+    }
+    #input:focus { border-color: var(--aqua-dim); }
+    button {
+      background: transparent;
+      color: var(--aqua);
+      border: 1px solid var(--aqua-dim);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font: inherit;
+      cursor: pointer;
+    }
+    button.primary {
+      background: var(--aqua);
+      color: #04211b;
+      border-color: var(--aqua);
+      font-weight: 650;
+    }
+    button:disabled { opacity: 0.5; cursor: default; }
+    button:hover:not(:disabled) { filter: brightness(1.08); }
+    .tools {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding-bottom: 8px;
+    }
+    #status {
+      color: var(--muted);
+      font-size: 0.85rem;
+      padding: 0 0 16px;
+      min-height: 1.4em;
+      white-space: pre-wrap;
+    }
+    #status.error { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="eyes" aria-hidden="true"><span class="eye"></span><span class="eye"></span></div>
+    <div>
+      <h1>D-RAYL Chat Box</h1>
+      <div class="sub">v1 (P37) · plumbing only · no infer engine · stays on this computer</div>
+    </div>
+    <div class="badge" id="badge">127.0.0.1</div>
+  </header>
+  <main>
+    <div id="log"></div>
+    <div class="composer">
+      <input id="input" type="text" maxlength="4000" placeholder="Type a message, then press Enter" autofocus>
+      <button class="primary" id="send" type="button">Send</button>
+    </div>
+    <div class="tools">
+      <button id="sleep" type="button">Sleep</button>
+      <button id="review" type="button">Review staging</button>
+      <button id="promote" type="button">Promote passing</button>
+    </div>
+    <div id="status"></div>
+  </main>
+  <script>
+    const log = document.getElementById("log");
+    const input = document.getElementById("input");
+    const status = document.getElementById("status");
+    const badge = document.getElementById("badge");
+
+    function setStatus(text, isError) {
+      status.textContent = text || "";
+      status.className = isError ? "error" : "";
+    }
+
+    function addMessage(role, text, extra) {
+      const el = document.createElement("div");
+      el.className = "msg " + role;
+      el.textContent = text;
+      if (extra) {
+        const meta = document.createElement("span");
+        meta.className = "meta";
+        meta.textContent = extra;
+        el.appendChild(meta);
+      }
+      log.appendChild(el);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    async function loadStatus() {
+      try {
+        const res = await fetch("/api/status");
+        const data = await res.json();
+        badge.textContent = "127.0.0.1 · " + data.grains + " grains";
+      } catch (err) {
+        badge.textContent = "127.0.0.1";
+      }
+    }
+
+    async function send() {
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = "";
+      addMessage("you", text);
+      setStatus("Thinking with the sand pit and memory…");
+      document.getElementById("send").disabled = true;
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text })
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          addMessage("mate", data.reply || data.error || "That message could not be sent.");
+          setStatus(data.error || "error", true);
+        } else {
+          const bits = [];
+          if (data.hits && data.hits.length) {
+            bits.push("grains: " + data.hits.map(h => h.id).join(", "));
+          }
+          if (data.used_quadrants && data.used_quadrants.length) {
+            bits.push("quadrants: " + data.used_quadrants.join(", "));
+          }
+          if (data.staging_id) bits.push("staged: " + data.staging_id);
+          addMessage("mate", data.reply, bits.join(" · "));
+          setStatus("Reply ready. This stays on this computer.");
+        }
+      } catch (err) {
+        addMessage("mate", "The local server did not answer. Is the chat box still running?");
+        setStatus(String(err), true);
+      } finally {
+        document.getElementById("send").disabled = false;
+        input.focus();
+        loadStatus();
+      }
+    }
+
+    async function sleepNow() {
+      setStatus("Running sleep mode…");
+      try {
+        const res = await fetch("/api/sleep", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}"
+        });
+        const data = await res.json();
+        const extra = [];
+        if (data.promoted && data.promoted.length) extra.push("promoted " + data.promoted.join(", "));
+        if (data.demoted && data.demoted.length) extra.push("demoted " + data.demoted.join(", "));
+        setStatus(data.message + (extra.length ? " " + extra.join("; ") : ""));
+      } catch (err) {
+        setStatus(String(err), true);
+      }
+    }
+
+    async function reviewStaging() {
+      setStatus("Reading staging…");
+      try {
+        const res = await fetch("/api/staging");
+        const data = await res.json();
+        const items = data.candidates || [];
+        if (!items.length) {
+          setStatus("Staging is empty. Chat first, and each reply will leave a candidate here.");
+          return;
+        }
+        const lines = items.map(item => {
+          const gate = item.gate || {};
+          const flag = gate.accepted ? "PASS" : ("FAIL (" + (gate.reason || "unknown") + ")");
+          return item.id + " · " + flag + " · " + (item.text || "").slice(0, 80);
+        });
+        setStatus("Staging (" + items.length + "):\n" + lines.join("\n"));
+      } catch (err) {
+        setStatus(String(err), true);
+      }
+    }
+
+    async function promotePassing() {
+      setStatus("Promoting candidates that pass the gate…");
+      try {
+        const res = await fetch("/api/promote", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passing: true })
+        });
+        const data = await res.json();
+        const results = data.results || [];
+        const ok = results.filter(r => r.promoted).length;
+        const left = results.length - ok;
+        setStatus("Promoted " + ok + " candidate(s); left " + left + " in staging.");
+        loadStatus();
+      } catch (err) {
+        setStatus(String(err), true);
+      }
+    }
+
+    document.getElementById("send").addEventListener("click", send);
+    document.getElementById("sleep").addEventListener("click", sleepNow);
+    document.getElementById("review").addEventListener("click", reviewStaging);
+    document.getElementById("promote").addEventListener("click", promotePassing);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        send();
+      }
+    });
+
+    addMessage(
+      "mate",
+      "Mate here — this first chat box has no infer engine yet. Type a message and I will search the sand pit and memory at the same time, then show you what I already have stored.\n\nTry “Hello”, “What is two plus two?”, or “What is D-RAYL?”"
+    );
+    loadStatus();
+  </script>
+</body>
+</html>
