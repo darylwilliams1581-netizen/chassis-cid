@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "description": "Static quadrant map. Changing boundaries means re-tagging grains, not rebuilding the index.",
+  "quadrants": [
+    {
+      "id": "numbers",
+      "name": "Numbers",
+      "capability_tags": [
+        "math",
+        "arithmetic",
+        "number",
+        "numbers",
+        "count",
+        "quantity",
+        "calculate",
+        "maths",
+        "pythagoras",
+        "hypotenuse",
+        "triangle",
+        "algebra",
+        "equation",
+        "formula",
+        "bidmas",
+        "bodmas",
+        "indices",
+        "theorem",
+        "operations"
+      ],
+      "description": "Numbers, arithmetic and quantities."
+    },
+    {
+      "id": "grammar_speech",
+      "name": "Grammar and speech",
+      "capability_tags": [
+        "grammar",
+        "speech",
+        "language",
+        "syntax",
+        "pronounce",
+        "wording",
+        "sentence",
+        "sentences",
+        "paragraph",
+        "paragraphs",
+        "comma",
+        "verb",
+        "subject",
+        "fragment"
+      ],
+      "description": "Grammar, wording and speech."
+    },
+    {
+      "id": "facts",
+      "name": "Facts",
+      "capability_tags": [
+        "fact",
+        "facts",
+        "knowledge",
+        "who",
+        "what",
+        "where",
+        "when"
+      ],
+      "description": "General knowledge and factual recall."
+    },
+    {
+      "id": "procedures",
+      "name": "Procedures",
+      "capability_tags": [
+        "how",
+        "procedure",
+        "procedures",
+        "steps",
+        "method",
+        "instruction"
+      ],
+      "description": "How-to steps and methods."
+    },
+    {
+      "id": "personal",
+      "name": "Personal",
+      "capability_tags": [
+        "personal",
+        "preference",
+        "remember",
+        "about_user",
+        "family"
+      ],
+      "description": "Things about the user and their preferences."
+    },
+    {
+      "id": "misc",
+      "name": "Miscellaneous",
+      "capability_tags": [
+        "misc",
+        "other",
+        "general"
+      ],
+      "description": "Anything that does not fit a more specific quadrant."
+    }
+  ]
+}
