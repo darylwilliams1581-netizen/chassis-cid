@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+data/*.sqlite
+data/*.sqlite-journal
+data/heatmap.jsonl
+data/heatmap_counts.json
+data/sandpit_state.json
+data/staging/*.json
+!data/staging/.gitkeep
+!data/.gitkeep
+*.log
+.DS_Store
