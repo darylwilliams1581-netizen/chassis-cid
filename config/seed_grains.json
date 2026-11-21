@@ -1,0 +1,82 @@
+[
+  {
+    "id": "seed-hello",
+    "quadrant": "misc",
+    "tags": ["hello", "hi", "general"],
+    "text": "Hello. This chat box runs only on this computer, at 127.0.0.1, and it does not use the internet.",
+    "tier": "warm",
+    "protected": true
+  },
+  {
+    "id": "seed-what-is-this",
+    "quadrant": "facts",
+    "tags": ["fact", "mate", "cid"],
+    "text": "D-RAYL Chat Box v1 is a local plumbing demo. It has no infer engine yet. It answers from stored grains in the sand pit and from memory of what helped last time.",
+    "tier": "warm",
+    "protected": true
+  },
+  {
+    "id": "seed-mate-face",
+    "quadrant": "facts",
+    "tags": ["mate", "cid"],
+    "text": "Mate is the desktop face of CID: a black screen with aqua eyes.",
+    "tier": "warm",
+    "protected": false
+  },
+  {
+    "id": "seed-two-plus-two",
+    "quadrant": "numbers",
+    "tags": ["math", "arithmetic", "numbers"],
+    "text": "Two plus two is four.",
+    "tier": "warm",
+    "protected": false
+  },
+  {
+    "id": "seed-pi-brain",
+    "quadrant": "numbers",
+    "tags": ["number", "facts"],
+    "text": "The planned Main CID brain is a Raspberry Pi 5 with 16GB of memory.",
+    "tier": "warm",
+    "protected": false
+  },
+  {
+    "id": "seed-sentence",
+    "quadrant": "grammar_speech",
+    "tags": ["grammar", "sentence"],
+    "text": "A sentence starts with a capital letter and ends with a full stop.",
+    "tier": "warm",
+    "protected": false
+  },
+  {
+    "id": "seed-drayl-vocab",
+    "quadrant": "grammar_speech",
+    "tags": ["drayl", "symbols", "language"],
+    "text": "D-RAYL is a vocabulary of 65,000 symbols sitting above the weights and the sand pit. The decoder is the translator between raw numeric output and that symbol set.",
+    "tier": "warm",
+    "protected": true
+  },
+  {
+    "id": "seed-localhost",
+    "quadrant": "facts",
+    "tags": ["fact"],
+    "text": "The chat box binds only to 127.0.0.1 (this computer). It does not accept connections from the network, and it makes no outbound internet calls.",
+    "tier": "warm",
+    "protected": true
+  },
+  {
+    "id": "seed-sleep",
+    "quadrant": "misc",
+    "tags": ["general"],
+    "text": "Sleep mode tidies the sand pit: grains that get used a lot are promoted to the hot tier, unused ones are demoted to cold, and protected grains are not demoted.",
+    "tier": "warm",
+    "protected": false
+  },
+  {
+    "id": "seed-staging",
+    "quadrant": "facts",
+    "tags": ["fact"],
+    "text": "Every reply is also saved as a candidate grain in the staging folder. Nothing is added to the sand pit automatically. You can review candidates and promote the ones that pass the compliance gate.",
+    "tier": "warm",
+    "protected": false
+  }
+]
