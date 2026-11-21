@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+data/*.json
+data/*.jsonl
+data/*.sqlite
+data/*.sqlite-journal
+school-pack/
+school-pack.zip
+*.egg-info/
+.DS_Store
